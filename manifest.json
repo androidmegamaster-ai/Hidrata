@@ -1,0 +1,16 @@
+{
+  "name": "Hidrata",
+  "short_name": "Hidrata",
+  "description": "Lembretes e controle diário de hidratação",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eaf6fb",
+  "theme_color": "#0ea5d9",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
