@@ -109,6 +109,8 @@ const ACCENTS = [{ n: "Azul", a: "#0ea5d9", b: "#5fd0f0" }, { n: "Verde", a: "#1
 const TYPES = [{ n: "Água", f: 1, e: "💧" }, { n: "Chá", f: 0.9, e: "🍵" }, { n: "Café", f: 0.8, e: "☕" }, { n: "Suco", f: 0.85, e: "🧃" }];
 const eff = (e) => typeof e === "number" ? e : Math.round(e.ml * e.f);
 const sumDay = (a) => (a || []).reduce((t, e) => t + eff(e), 0);
+const fu = (s, v) => s.unit === "oz" ? `${(v / 29.5735).toFixed(1)} oz` : `${v} ml`;
+const TIPS = ["Um copo de água ao acordar ajuda a repor o que você perdeu durante a noite.", "Urina bem escura costuma indicar que é hora de beber mais água.", "Deixe uma garrafa à vista: o que está à mão é mais fácil de beber.", "Melancia, laranja e pepino também ajudam na hidratação.", "Em dias quentes ou de treino, a necessidade de líquidos aumenta.", "Um copo antes das refeições é um hábito fácil de manter.", "Pequenos goles ao longo do dia funcionam melhor que grandes volumes de uma vez.", "Associe um copo de água a um hábito fixo, como escovar os dentes."];
 function getStreak(logs, goal) {
   const d = new Date(); let n = 0;
   if (sumDay(logs[dayKey(d)]) < goal) d.setDate(d.getDate() - 1);
@@ -116,7 +118,11 @@ function getStreak(logs, goal) {
   return n;
 }
 
-function calcGoal(s) { return s.manual ? s.manualGoal : Math.round((s.weight * 35) / 50) * 50; }
+function calcGoal(s, d = new Date()) {
+  let g = s.manual ? s.manualGoal : Math.round((s.weight * 35) / 50) * 50;
+  if (s.rampOn && s.rampFrom && s.rampStart) { const w = Math.max(0, Math.floor((d - new Date(s.rampStart + "T12:00")) / 6048e5)); g = Math.min(g, s.rampFrom + 100 * w); }
+  return s.weekendGoal && [0, 6].includes(d.getDay()) ? s.weekendGoal : g;
+}
 function calcSchedule(s, goal) {
   const a = toMin(s.wake), b = toMin(s.sleep);
   if (b <= a) return [];
@@ -144,7 +150,11 @@ function App() {
   const [bonus, setBonus] = useState(() => load("hidrata_bonus", {}));
   const [dk, setDk] = useState(0);
   const baseGoal = calcGoal(s);
-  const goal = baseGoal + (bonus[dayKey()] || 0);
+  const [wx, setWx] = useState(() => load("hidrata_wx", null));
+  const wxOn = s.weather && wx && wx.day === dayKey();
+  const wxBonus = wxOn ? (wx.t >= 32 ? 500 : wx.t >= 28 ? 250 : 0) : 0;
+  const wxNote = wxOn ? `${Math.round(wx.t)}°C${wxBonus ? ` (+${wxBonus} ml)` : ""}` : "";
+  const goal = baseGoal + (bonus[dayKey()] || 0) + wxBonus;
   const today = dayKey();
   const entries = logs[today] || [];
   const total = sumDay(entries);
@@ -162,6 +172,17 @@ function App() {
     if (s.mode === "auto") r.removeAttribute("data-theme"); else r.setAttribute("data-theme", s.mode);
     if (s.accent) { r.style.setProperty("--accent", c.a); r.style.setProperty("--accent2", c.b); } else { r.style.removeProperty("--accent"); r.style.removeProperty("--accent2"); }
   }, [s.accent, s.mode]);
+  useEffect(() => {
+    if (!s.weather || (wx && wx.day === dayKey()) || !navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(async p => {
+      try {
+        const d = dayKey();
+        const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${p.coords.latitude}&longitude=${p.coords.longitude}&daily=temperature_2m_max&timezone=auto&start_date=${d}&end_date=${d}`);
+        const j = await r.json(); const w = { day: d, t: j.daily.temperature_2m_max[0] };
+        setWx(w); save("hidrata_wx", w);
+      } catch {}
+    }, () => {}, { timeout: 10000 });
+  }, [s.weather]);
   useEffect(() => { // atalho Siri/Atalhos: ?add=250
     const v = +new URLSearchParams(location.search).get("add");
     if (v > 0 && v <= 2000) { add(v, 0); history.replaceState(null, "", location.pathname); }
@@ -176,7 +197,7 @@ function App() {
   useEffect(() => {
     const check = () => {
       const { s, schedule, total, goal, perm, lastT } = stateRef.current;
-      if (!s.notify || perm !== "granted" || total >= goal) return;
+      if (!s.notify || perm !== "granted" || total >= goal || Date.now() < (s.pauseUntil || 0)) return;
       const d = new Date(), now = d.getHours() * 60 + d.getMinutes(), key = dayKey(d);
       let sent = load("hidrata_sent", { day: key, t: [] });
       if (sent.day !== key) sent = { day: key, t: [] };
@@ -225,7 +246,7 @@ function App() {
             <div style={{ fontSize: 14, lineHeight: 1.4 }}><b>Este ambiente não permite salvar dados.</b> Os registros serão perdidos ao sair. Abra o app pelo seu endereço HTTPS no Safari ou pelo ícone da Tela de Início.</div>
           </div>
         )}
-        {tab === "hoje" && <Today {...{ total, goal, pct, add, undo, entries, schedule, pop, s, perm, enableNotif, dk, setDk, bonus: bonus[today] || 0, setBonus: (v) => setBonus(b => ({ ...b, [today]: v })) }} />}
+        {tab === "hoje" && <Today {...{ total, goal, pct, add, undo, entries, schedule, pop, s, perm, enableNotif, dk, setDk, bonus: bonus[today] || 0, wxNote, setBonus: (v) => setBonus(b => ({ ...b, [today]: v })) }} />}
         {tab === "hist" && <History logs={logs} goal={baseGoal} setLogs={setLogs} />}
         {tab === "ajustes" && <Settings {...{ s, setS, goal: baseGoal, schedule, perm, enableNotif, logs, setLogs }} />}
       </main>
@@ -262,8 +283,11 @@ function InstallNotice({ perm, enableNotif, s }) {
   return null;
 }
 
-function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, enableNotif, dk, setDk, bonus, setBonus }) {
+function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, enableNotif, dk, setDk, bonus, setBonus, wxNote }) {
   const lk = { background: "none", border: 0, color: "var(--accent)", fontWeight: 700, fontSize: 15, padding: "4px 8px" };
+  const [cv, setCv] = useState("");
+  const [md, setMd] = useState(() => load("hidrata_mood", {}));
+  const setM = (k, v) => setMd(m => { const n = { ...m, [dayKey()]: { ...(m[dayKey()] || {}), [k]: v } }; save("hidrata_mood", n); return n; });
   const R = 100, C = 2 * Math.PI * R;
   const per = [0, 0, 0]; entries.forEach(e => { if (e.t) { const h = new Date(e.t).getHours(); per[h < 12 ? 0 : h < 18 ? 1 : 2] += eff(e); } });
   const dist = per.some(Boolean) ? `Manhã ${per[0]} · Tarde ${per[1]} · Noite ${per[2]} ml` : "";
@@ -271,6 +295,14 @@ function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, e
   const nextT = schedule.find(t => { const d = new Date(); return t > d.getHours() * 60 + d.getMinutes(); });
   return (
     <>
+      <div className="card" style={{ marginBottom: 16, fontSize: 14, lineHeight: 1.5 }}>💡 {TIPS[Math.floor(Date.now() / 864e5) % TIPS.length]}</div>
+      <div className="card" style={{ marginBottom: 16, fontSize: 14 }}>
+        {[["humor", "Humor", ["😣", "😐", "🙂"]], ["sede", "Sede", ["Pouca", "Média", "Muita"]]].map(([k, lb, opts]) => (
+          <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+            <span style={{ width: 52, color: "var(--mute)" }}>{lb}</span>
+            {opts.map((o, i) => <button key={o} className="press" onClick={() => setM(k, i + 1)} style={{ flex: 1, border: 0, borderRadius: 12, padding: "8px 0", fontSize: k === "humor" ? 20 : 14, fontWeight: 600, background: (md[dayKey()] || {})[k] === i + 1 ? "var(--accent)" : "var(--line)", color: (md[dayKey()] || {})[k] === i + 1 ? "#fff" : "var(--ink)" }}>{o}</button>)}
+          </div>))}
+      </div>
       <InstallNotice {...{ perm, enableNotif, s }} />
       <div className="card" style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "26px 18px" }}>
         <div key={pop} className={pop ? "pop" : ""} style={{ position: "relative", width: 240, height: 240 }}>
@@ -283,8 +315,8 @@ function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, e
           </svg>
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <Icon n={pct >= 1 ? "check" : "droplet"} size={26} className="" />
-            <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: -1, lineHeight: 1.1 }}>{total}<span style={{ fontSize: 18, color: "var(--mute)", fontWeight: 600 }}> ml</span></div>
-            <div style={{ color: "var(--mute)", fontSize: 14 }}>de {goal} ml · {Math.round(pct * 100)}%</div>
+            <div style={{ fontSize: 44, fontWeight: 800, letterSpacing: -1, lineHeight: 1.1 }}>{s.unit === "oz" ? (total / 29.5735).toFixed(1) : total}<span style={{ fontSize: 18, color: "var(--mute)", fontWeight: 600 }}> {s.unit === "oz" ? "oz" : "ml"}</span></div>
+            <div style={{ color: "var(--mute)", fontSize: 14 }}>de {fu(s, goal)} · {Math.round(pct * 100)}%</div>
           </div>
         </div>
         <p style={{ margin: "14px 0 0", color: "var(--mute)", fontSize: 14, textAlign: "center" }}>
@@ -296,8 +328,12 @@ function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, e
         {TYPES.map((t, i) => <button key={t.n} onClick={() => { buzz(); setDk(i); }} className="press" style={{ border: 0, borderRadius: 999, padding: "8px 14px", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", color: dk === i ? "#fff" : "var(--ink)", background: dk === i ? "var(--accent)" : "var(--card)" }}>{t.e} {t.n}</button>)}
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 14 }}>
-        <span style={{ color: "var(--mute)" }}>🏃 Treino/calor: {bonus ? `+${bonus} ml na meta` : "sem ajuste"}</span>
+        <span style={{ color: "var(--mute)" }}>🏃 Treino/calor: {bonus ? `+${bonus} ml na meta` : "sem ajuste"}{wxNote && ` · 🌡 ${wxNote}`}</span>
         <span><button onClick={() => setBonus(bonus + 250)} style={lk}>+250</button>{bonus > 0 && <button onClick={() => setBonus(0)} style={lk}>Zerar</button>}</span>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+        <input type="number" inputMode="numeric" placeholder="Outro valor (ml)" value={cv} onChange={e => setCv(e.target.value)} style={{ flex: 1, minWidth: 0, border: "1px solid var(--line)", borderRadius: 14, padding: "12px 14px", background: "var(--card)", color: "var(--ink)" }} />
+        <button className="press" onClick={() => { const v = Math.min(3000, +cv || 0); if (v) { add(v); setCv(""); } }} style={{ border: 0, borderRadius: 14, padding: "0 18px", fontWeight: 700, fontSize: 16, color: "#fff", background: "var(--accent)" }}>Adicionar</button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, margin: "16px 0" }}>
         {s.cups.map(ml => (
@@ -305,7 +341,7 @@ function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, e
             style={{ height: 96, borderRadius: 24, border: 0, color: "#fff", fontWeight: 800,
                      background: "linear-gradient(160deg, var(--accent2), var(--accent))",
                      boxShadow: "0 8px 20px -8px var(--accent)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2 }}>
-            <Icon n="plus" size={18} sw={3} /><span style={{ fontSize: 22 }}>{ml}</span><span style={{ fontSize: 12, opacity: .85, marginTop: -4 }}>ml</span>
+            <Icon n="plus" size={18} sw={3} /><span style={{ fontSize: 22 }}>{s.unit === "oz" ? (ml / 29.5735).toFixed(1) : ml}</span><span style={{ fontSize: 12, opacity: .85, marginTop: -4 }}>{s.unit === "oz" ? "oz" : "ml"}</span>
           </button>
         ))}
       </div>
@@ -325,6 +361,33 @@ function Today({ total, goal, pct, add, undo, entries, schedule, pop, s, perm, e
             </div>}
       </div>
     </>
+  );
+}
+
+function Habits({ logs, goal }) {
+  const hours = Array(24).fill(0), wd = Array.from({ length: 7 }, () => [0, 0]);
+  Object.keys(logs).forEach(k => {
+    const es = logs[k] || []; if (!es.length) return;
+    const w = new Date(k + "T12:00").getDay(); wd[w][0] += sumDay(es); wd[w][1]++;
+    es.forEach(e => { if (e.t) hours[new Date(e.t).getHours()] += eff(e); });
+  });
+  const avgs = wd.map(([t, n], i) => ({ i, a: n ? t / n : null })).filter(x => x.a !== null);
+  if (!avgs.length) return null;
+  const peak = hours.indexOf(Math.max(...hours));
+  const weak = avgs.reduce((m, x) => x.a < m.a ? x : m), strong = avgs.reduce((m, x) => x.a > m.a ? x : m);
+  const names = ["domingo", "segunda", "terça", "quarta", "quinta", "sexta", "sábado"];
+  const md = load("hidrata_mood", {}), hm = [0, 0, 0].map(() => [0, 0]);
+  Object.keys(md).forEach(k => { const h = md[k].humor; if (h && (logs[k] || []).length) { hm[h - 1][0] += sumDay(logs[k]); hm[h - 1][1]++; } });
+  const hAvg = hm.map(([t, n]) => n ? Math.round(t / n) : null);
+  return (
+    <div className="card" style={{ marginTop: 16, fontSize: 14, lineHeight: 1.6 }}>
+      <b style={{ fontSize: 16 }}>Seus hábitos</b>
+      {Math.max(...hours) > 0 && <div>⏰ Você bebe mais por volta das <b>{String(peak).padStart(2, "0")}h</b>.</div>}
+      <div>📉 Dia mais fraco: <b>{names[weak.i]}</b> (média {Math.round(weak.a)} ml).</div>
+      <div>📈 Dia mais forte: <b>{names[strong.i]}</b> (média {Math.round(strong.a)} ml).</div>
+      {hAvg.some(v => v !== null) && <div>🙂 Humor e consumo: {["😣", "😐", "🙂"].map((e, i) => hAvg[i] !== null ? `${e} ${hAvg[i]} ml` : null).filter(Boolean).join(" · ")}</div>}
+      <div style={{ color: "var(--mute)", marginTop: 6 }}>Dica: {weak.a < goal ? "reforce seus registros no dia mais fraco." : "ótimo equilíbrio, mantenha o ritmo!"}</div>
+    </div>
   );
 }
 
@@ -352,6 +415,7 @@ function Extra({ logs, goal }) {
   const cells = [...Array(first).fill(null), ...Array.from({ length: nd }, (_, i) => i + 1)];
   return (<>
     <Trend logs={logs} goal={goal} />
+    <Habits logs={logs} goal={goal} />
     <div className="card" style={{ marginTop: 16 }}>
       <div style={{ fontSize: 26, fontWeight: 800 }}>🔥 {streak} {streak === 1 ? "dia" : "dias"} seguidos</div>
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -394,6 +458,7 @@ function History({ logs, goal, setLogs }) {
         </div>
       </div>
       <button onClick={() => exportPDF(logs, goal)} className="press" style={{ width: "100%", marginTop: 16, border: 0, borderRadius: 16, padding: "14px 0", fontWeight: 700, fontSize: 16, color: "#fff", background: "linear-gradient(160deg, var(--accent2), var(--accent))" }}>Exportar histórico em PDF</button>
+      <button onClick={() => shareCard(getStreak(logs, goal), goal, sumDay(logs[dayKey()]))} className="press" style={{ width: "100%", marginTop: 12, border: 0, borderRadius: 16, padding: "14px 0", fontWeight: 700, fontSize: 16, color: "var(--accent)", background: "var(--card)" }}>Compartilhar conquista</button>
       <Extra logs={logs} goal={goal} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, margin: "16px 0" }}>
         <div className="card"><div style={{ color: "var(--mute)", fontSize: 13 }}>Média diária</div><div style={{ fontSize: 26, fontWeight: 800 }}>{avg} ml</div></div>
@@ -413,6 +478,21 @@ function History({ logs, goal, setLogs }) {
       </div>
     </>
   );
+}
+
+async function shareCard(streak, goal, today) {
+  const c = document.createElement("canvas"); c.width = c.height = 1080;
+  const g = c.getContext("2d"), gr = g.createLinearGradient(0, 0, 1080, 1080);
+  gr.addColorStop(0, "#5fd0f0"); gr.addColorStop(1, "#0ea5d9"); g.fillStyle = gr; g.fillRect(0, 0, 1080, 1080);
+  g.fillStyle = "#fff"; g.textAlign = "center";
+  g.font = "bold 90px -apple-system, sans-serif"; g.fillText("💧 Hidrata", 540, 230);
+  g.font = "bold 300px -apple-system, sans-serif"; g.fillText(String(streak), 540, 600);
+  g.font = "bold 80px -apple-system, sans-serif"; g.fillText(streak === 1 ? "dia seguido" : "dias seguidos", 540, 720);
+  g.font = "50px -apple-system, sans-serif"; g.fillText(`Meta diária: ${goal} ml · hoje: ${today} ml`, 540, 880);
+  const blob = await new Promise(r => c.toBlob(r, "image/png"));
+  const file = new File([blob], "hidrata-conquista.png", { type: "image/png" });
+  try { if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file] }); return; } } catch (e) { if (e && e.name === "AbortError") return; }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
 }
 
 async function exportPDF(logs, goal) {
@@ -463,6 +543,7 @@ function Row({ label, children }) {
 
 function Settings({ s, setS, goal, schedule, perm, enableNotif, logs, setLogs }) {
   const [txt, setTxt] = useState(""); const [msg, setMsg] = useState("");
+  const chip = { border: 0, borderRadius: 999, padding: "7px 13px", fontWeight: 600, fontSize: 14, background: "var(--line)", color: "var(--ink)" };
   const btn = { flex: 1, border: 0, borderRadius: 14, padding: "12px 0", fontWeight: 700, background: "var(--accent)", color: "#fff", fontSize: 16 };
   const up = (k, v) => setS(x => ({ ...x, [k]: v }));
   const Toggle = ({ on, set }) => (
@@ -477,6 +558,11 @@ function Settings({ s, setS, goal, schedule, perm, enableNotif, logs, setLogs })
         {s.manual
           ? <Row label="Meta (ml)"><input className="field" type="number" inputMode="numeric" value={s.manualGoal} onChange={e => up("manualGoal", Math.max(500, +e.target.value || 0))} /></Row>
           : <Row label="Peso (kg)"><input className="field" type="number" inputMode="decimal" value={s.weight} onChange={e => up("weight", Math.max(20, +e.target.value || 0))} /></Row>}
+        <Row label="Unidade"><div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>{["ml", "oz"].map(u => <button key={u} className="press" onClick={() => up("unit", u)} style={{ ...chip, background: (s.unit || "ml") === u ? "var(--accent)" : "var(--line)", color: (s.unit || "ml") === u ? "#fff" : "var(--ink)" }}>{u}</button>)}</div></Row>
+        <Row label="Ajustar pelo clima"><Toggle on={!!s.weather} set={v => up("weather", v)} /></Row>
+        <Row label="Meta progressiva"><Toggle on={!!s.rampOn} set={v => setS(x => ({ ...x, rampOn: v, rampStart: dayKey(), rampFrom: x.rampFrom || 1500 }))} /></Row>
+        {s.rampOn && <Row label="Começar em (ml)"><input className="field" type="number" inputMode="numeric" value={s.rampFrom} onChange={e => up("rampFrom", Math.max(500, +e.target.value || 0))} /></Row>}
+        <Row label="Fim de semana (ml)"><input className="field" type="number" inputMode="numeric" placeholder="igual" value={s.weekendGoal || ""} onChange={e => up("weekendGoal", Math.max(0, +e.target.value || 0))} /></Row>
         <div style={{ padding: "12px 0", color: "var(--mute)", fontSize: 14 }}>
           Meta diária: <b style={{ color: "var(--accent)" }}>{goal} ml</b>{!s.manual && " (35 ml por kg)"}
         </div>
@@ -489,6 +575,11 @@ function Settings({ s, setS, goal, schedule, perm, enableNotif, logs, setLogs })
           <Toggle on={s.notify && perm === "granted"} set={v => v ? (perm === "granted" ? up("notify", true) : enableNotif()) : up("notify", false)} />
         </Row>
         <div style={{ padding: "12px 0" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <button className="press" style={chip} onClick={() => up("pauseUntil", Date.now() + 3600000)}>Pausar 1 h</button>
+            <button className="press" style={chip} onClick={() => { const d = new Date(); d.setHours(24, 0, 0, 0); up("pauseUntil", +d); }}>Pular hoje</button>
+            {(s.pauseUntil || 0) > Date.now() && <><button className="press" style={chip} onClick={() => up("pauseUntil", 0)}>Retomar</button><span style={{ fontSize: 13, color: "var(--mute)" }}>pausado até {new Date(s.pauseUntil).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span></>}
+          </div>
           <div style={{ color: "var(--mute)", fontSize: 14, marginBottom: 8 }}>
             {schedule.length ? `${schedule.length} lembretes por dia` : "Defina um horário de dormir depois do de acordar."}
           </div>
