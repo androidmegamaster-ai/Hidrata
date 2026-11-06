@@ -70,6 +70,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef, useCallback } = React;
@@ -392,6 +393,7 @@ function History({ logs, goal, setLogs }) {
           ))}
         </div>
       </div>
+      <button onClick={() => exportPDF(logs, goal)} className="press" style={{ width: "100%", marginTop: 16, border: 0, borderRadius: 16, padding: "14px 0", fontWeight: 700, fontSize: 16, color: "#fff", background: "linear-gradient(160deg, var(--accent2), var(--accent))" }}>Exportar histórico em PDF</button>
       <Extra logs={logs} goal={goal} />
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, margin: "16px 0" }}>
         <div className="card"><div style={{ color: "var(--mute)", fontSize: 13 }}>Média diária</div><div style={{ fontSize: 26, fontWeight: 800 }}>{avg} ml</div></div>
@@ -411,6 +413,47 @@ function History({ logs, goal, setLogs }) {
       </div>
     </>
   );
+}
+
+async function exportPDF(logs, goal) {
+  if (!window.jspdf) { alert("A biblioteca de PDF não carregou. Conecte-se à internet e tente de novo."); return; }
+  const doc = new window.jspdf.jsPDF({ unit: "mm", format: "a4" });
+  const keys = Object.keys(logs).filter(k => (logs[k] || []).length).sort();
+  const rows = keys.map(k => ({ k, t: sumDay(logs[k]), n: logs[k].length }));
+  const hit = rows.filter(r => r.t >= goal).length;
+  const avg = rows.length ? Math.round(rows.reduce((a, r) => a + r.t, 0) / rows.length) : 0;
+  const best = rows.reduce((m, r) => Math.max(m, r.t), 0);
+  const fd = (k) => new Date(k + "T12:00").toLocaleDateString("pt-BR");
+  doc.setFillColor(14, 165, 217); doc.rect(0, 0, 210, 28, "F");
+  doc.setTextColor(255); doc.setFontSize(20); doc.setFont("helvetica", "bold");
+  doc.text("Hidrata - Histórico de hidratação", 14, 18);
+  doc.setTextColor(40); doc.setFontSize(10); doc.setFont("helvetica", "normal");
+  let y = 38;
+  doc.text(`Gerado em ${new Date().toLocaleDateString("pt-BR")} · Meta diária de referência: ${goal} ml`, 14, y); y += 7;
+  doc.text(rows.length ? `Período: ${fd(keys[0])} a ${fd(keys[keys.length - 1])} · ${rows.length} dias com registro` : "Sem registros.", 14, y); y += 7;
+  doc.text(`Média: ${avg} ml/dia · Metas atingidas: ${hit} de ${rows.length} · Melhor dia: ${best} ml`, 14, y); y += 12;
+  const head = () => {
+    doc.setFillColor(14, 165, 217); doc.rect(14, y - 5, 182, 8, "F"); doc.setTextColor(255); doc.setFont("helvetica", "bold");
+    doc.text("Data", 16, y); doc.text("Registros", 70, y); doc.text("Total (ml)", 105, y); doc.text("% da meta", 140, y); doc.text("Status", 172, y);
+    doc.setFont("helvetica", "normal"); doc.setTextColor(40); y += 8;
+  };
+  head();
+  [...rows].reverse().forEach((r, i) => {
+    if (y > 278) { doc.addPage(); y = 20; head(); }
+    if (i % 2 === 0) { doc.setFillColor(238, 247, 251); doc.rect(14, y - 5, 182, 7, "F"); }
+    doc.setTextColor(40);
+    doc.text(fd(r.k), 16, y); doc.text(String(r.n), 70, y); doc.text(String(r.t), 105, y); doc.text(`${Math.round((r.t / goal) * 100)}%`, 140, y);
+    doc.setTextColor(...(r.t >= goal ? [16, 150, 90] : [170, 100, 20])); doc.text(r.t >= goal ? "Atingida" : "Abaixo", 172, y);
+    y += 7;
+  });
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) { doc.setPage(i); doc.setTextColor(120); doc.setFontSize(9); doc.text(`Página ${i} de ${pages}`, 105, 290, { align: "center" }); }
+  const blob = doc.output("blob");
+  const file = new File([blob], "hidrata-historico.pdf", { type: "application/pdf" });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: "Histórico Hidrata" }); return; }
+  } catch (e) { if (e && e.name === "AbortError") return; }
+  doc.save("hidrata-historico.pdf");
 }
 
 function Row({ label, children }) {
